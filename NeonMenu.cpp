@@ -263,8 +263,8 @@ static void DrawNeon() {
             unsigned char r8 = (unsigned char)(fminf(rgb[0], 1.0f) * 255);
             unsigned char g8 = (unsigned char)(fminf(rgb[1], 1.0f) * 255);
             unsigned char b8 = (unsigned char)(fminf(rgb[2], 1.0f) * 255);
-            // type 1 = additive (glowing) shadow, soft round texture
-            if (glowTex) CShadows::StoreShadowToBeRendered(1, glowTex, &p,
+            // shadow type: 1 = dark (multiply, caused black squares), 2 = additive (glow), 3 = inverse color
+            if (glowTex) CShadows::StoreShadowToBeRendered(2, glowTex, &p,
                 m->up.x * R, m->up.y * R, m->right.x * R, m->right.y * R,
                 150, r8, g8, b8, 4.0f, false, 1.0f, nullptr, false);
             if ((n & 1) == 0) // real light on the surroundings
