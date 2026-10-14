@@ -16,39 +16,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Get plugin-sdk
-        run: git clone --depth 1 https://github.com/DK22Pac/plugin-sdk.git C:\plugin-sdk
-
-      - name: Get premake
-        run: |
-          Invoke-WebRequest https://github.com/premake/premake-core/releases/download/v5.0.0-beta7/premake-5.0.0-beta7-windows.zip -OutFile p.zip
-          Expand-Archive p.zip C:\premake
-
-      - name: Generate VS projects
-        working-directory: C:\plugin-sdk\tools\premake
-        run: |
-          Select-String -Path premake5.lua -Pattern multiprocessorcompile
-          (Get-Content premake5.lua) -replace 'multiprocessorcompile[^\r\n]*', 'flags { "MultiProcessorCompile" }' | Set-Content premake5.lua
-          C:\premake\premake5.exe vs2022
-          Get-ChildItem C:\plugin-sdk -Recurse -Filter *.vcxproj | ForEach-Object { $_.FullName }
-
       - uses: microsoft/setup-msbuild@v2
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x86
 
-      - name: Build plugin-sdk library (GTA SA)
-        run: msbuild C:\plugin-sdk\plugin_sa\plugin_sa.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143
+      - name: Get plugin-sdk
+        run: git clone --depth 1 https://github.com/DK22Pac/plugin-sdk.git C:\plugin-sdk
 
-      - name: Compile SkyMod.asi
+      - name: Build latest premake from source
         shell: cmd
         run: |
-          dir /s /b C:\plugin-sdk\output\*.lib
-          cl /nologo /LD /EHsc /MT /O2 /std:c++17 /DGTASA /DPLUGIN_SGV_10US /D_CRT_SECURE_NO_WARNINGS /DNOMINMAX ^
-            /I"%PLUGIN_SDK_DIR%plugin_sa" /I"%PLUGIN_SDK_DIR%plugin_sa\game_sa" ^
-            /I"%PLUGIN_SDK_DIR%shared" /I"%PLUGIN_SDK_DIR%shared\game" ^
-            SkyMod.cpp /Fe:SkyMod.asi ^
-            /link /LIBPATH:"%PLUGIN_SDK_DIR%output\lib" plugin.lib user32.lib
+          git clone --depth 1 https://github.com/premake/premake-core.git C:\premake-src
+          cd /d C:\premake-src
+          nmake -f Bootstrap.mak MSDEV=vs2022 windows
+          dir C:\premake-src\bin\release
+
+      - name: Generate VS projects
+        working-directory: C:\plugin-sdk\tools\premake
+        run: |
+          C:\premake-src\bin\release\premake5.exe vs2022
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Get-ChildItem C:\plugin-sdk -Recurse -Filter *.vcxproj | ForEach-Object { $_.FullName }
+
+      - name: Build plugin-sdk library (GTA SA)
+        run: |
+          $proj = Get-ChildItem C:\plugin-sdk -Recurse -Filter plugin_sa.vcxproj | Select-Object -First 1
+          if (-not $proj) { Write-Host "plugin_sa.vcxproj not found"; exit 1 }
+          msbuild $proj.FullName /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Compile SkyMod.asi
+        run: |
+          $lib = Get-ChildItem C:\plugin-sdk -Recurse -Filter plugin.lib | Select-Object -First 1
+          if (-not $lib) { Get-ChildItem C:\plugin-sdk -Recurse -Filter *.lib | ForEach-Object { $_.FullName }; exit 1 }
+          Write-Host "Using lib: $($lib.FullName)"
+          $d = "C:\plugin-sdk"
+          cl /nologo /LD /EHsc /MT /O2 /std:c++17 /DGTASA /DPLUGIN_SGV_10US /D_CRT_SECURE_NO_WARNINGS /DNOMINMAX "/I$d\plugin_sa" "/I$d\plugin_sa\game_sa" "/I$d\shared" "/I$d\shared\game" SkyMod.cpp /Fe:SkyMod.asi /link "/LIBPATH:$($lib.DirectoryName)" plugin.lib user32.lib
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - uses: actions/upload-artifact@v4
         with:
