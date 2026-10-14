@@ -114,7 +114,7 @@ static void Txt(const char* s, float x, float y, float scale, CRGBA col) {
     CFont::SetBackground(false, false);
     CFont::SetProportional(true);
     CFont::SetJustify(false);
-    CFont::SetOrientation(1);
+    CFont::SetOrientation(static_cast<eFontAlignment>(1));
     CFont::SetWrapx(SCREEN_WIDTH * 2.0f);
     CFont::SetDropShadowPosition(1);
     CFont::SetScale(0.5f * scale * kx, 1.0f * scale * ky);
