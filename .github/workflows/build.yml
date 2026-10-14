@@ -27,6 +27,8 @@ jobs:
       - name: Generate VS projects
         working-directory: C:\plugin-sdk\tools\premake
         run: |
+          Select-String -Path premake5.lua -Pattern multiprocessorcompile
+          (Get-Content premake5.lua) -replace 'multiprocessorcompile[^\r\n]*', 'flags { "MultiProcessorCompile" }' | Set-Content premake5.lua
           C:\premake\premake5.exe vs2022
           Get-ChildItem C:\plugin-sdk -Recurse -Filter *.vcxproj | ForEach-Object { $_.FullName }
 
