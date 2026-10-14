@@ -7,12 +7,26 @@ jobs:
   build:
     runs-on: windows-2022
     env:
-      PLUGIN_SDK_DIR: C:\plugin-sdk
+      PLUGIN_SDK_DIR: C:\plugin-sdk\
     steps:
       - uses: actions/checkout@v4
 
       - name: Get plugin-sdk
         run: git clone --depth 1 https://github.com/DK22Pac/plugin-sdk.git C:\plugin-sdk
+
+      - name: Get premake
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/premake/premake-core/releases/download/v5.0.0-beta2/premake-5.0.0-beta2-windows.zip -OutFile p.zip
+          Expand-Archive p.zip C:\premake
+
+      - name: Generate VS projects
+        shell: pwsh
+        working-directory: C:\plugin-sdk
+        run: |
+          Get-ChildItem -Recurse -Filter premake5.lua | ForEach-Object { $_.FullName }
+          C:\premake\premake5.exe vs2022
+          Get-ChildItem -Recurse -Filter *.vcxproj | ForEach-Object { $_.FullName }
 
       - uses: microsoft/setup-msbuild@v2
       - uses: ilammy/msvc-dev-cmd@v1
@@ -20,17 +34,21 @@ jobs:
           arch: x86
 
       - name: Build plugin-sdk library (GTA SA)
-        run: msbuild C:\plugin-sdk\plugin_sa\plugin_sa.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /p:PLUGIN_SDK_DIR=C:\plugin-sdk\
+        shell: pwsh
+        run: |
+          $p = Get-ChildItem C:\plugin-sdk -Recurse -Filter plugin_sa.vcxproj | Select-Object -First 1
+          msbuild $p.FullName /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143
+          Get-ChildItem C:\plugin-sdk -Recurse -Filter *.lib | ForEach-Object { $_.FullName }
 
       - name: Compile SkyMod.asi
-        shell: cmd
+        shell: pwsh
         run: |
-          dir /s /b C:\plugin-sdk\output\*.lib
-          cl /nologo /LD /EHsc /MT /O2 /std:c++17 /DGTASA /DPLUGIN_SGV_10US /D_CRT_SECURE_NO_WARNINGS /DNOMINMAX ^
-            /I"%PLUGIN_SDK_DIR%\plugin_sa" /I"%PLUGIN_SDK_DIR%\plugin_sa\game_sa" ^
-            /I"%PLUGIN_SDK_DIR%\shared" /I"%PLUGIN_SDK_DIR%\shared\game" ^
-            SkyMod.cpp /Fe:SkyMod.asi ^
-            /link /LIBPATH:"%PLUGIN_SDK_DIR%\output\lib" plugin.lib user32.lib
+          $lib = Get-ChildItem C:\plugin-sdk -Recurse -Include plugin.lib,plugin_sa.lib | Select-Object -First 1
+          cl /nologo /LD /EHsc /MT /O2 /std:c++17 /DGTASA /DPLUGIN_SGV_10US /D_CRT_SECURE_NO_WARNINGS /DNOMINMAX `
+            /I"C:\plugin-sdk\plugin_sa" /I"C:\plugin-sdk\plugin_sa\game_sa" `
+            /I"C:\plugin-sdk\shared" /I"C:\plugin-sdk\shared\game" `
+            SkyMod.cpp /Fe:SkyMod.asi `
+            /link $lib.FullName user32.lib
 
       - uses: actions/upload-artifact@v4
         with:
