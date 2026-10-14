@@ -25,7 +25,7 @@ jobs:
           Expand-Archive p.zip C:\premake
 
       - name: Generate VS projects
-        working-directory: C:\plugin-sdk
+        working-directory: C:\plugin-sdk\tools\premake
         run: |
           C:\premake\premake5.exe vs2022
           Get-ChildItem C:\plugin-sdk -Recurse -Filter *.vcxproj | ForEach-Object { $_.FullName }
