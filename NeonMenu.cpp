@@ -9,6 +9,7 @@
 #include "CPointLights.h"
 #include "CCoronas.h"
 #include "CShadows.h"
+#include "CTxdStore.h"
 #include <d3d9.h>
 #include <cmath>
 #include <cstdio>
@@ -204,6 +205,28 @@ static void Eval(int style, float t, int pt, float u, bool left, bool front, flo
     for (int c = 0; c < 3; c++) outRGB[c] *= k;
 }
 
+// soft round glow texture used by the game itself for explosions/headlights ("shad_exp" in particle.txd)
+static RwTexture* GetGlowTex() {
+    static RwTexture* tex = nullptr;
+    static bool tried = false;
+    if (tex || tried) return tex;
+    // 1) the game's own pointer, whichever way this plugin-sdk version declares it
+    __if_exists(CShadows::gpShadowExplosionTex) { tex = CShadows::gpShadowExplosionTex; }
+    __if_exists(gpShadowExplosionTex) { tex = gpShadowExplosionTex; }
+    // 2) otherwise look it up by name in particle.txd
+    if (!tex) {
+        int slot = CTxdStore::FindTxdSlot("particle");
+        if (slot >= 0) {
+            CTxdStore::PushCurrentTxd();
+            CTxdStore::SetCurrentTxd(slot);
+            tex = RwTexDictionaryFindNamedTexture(RwTexDictionaryGetCurrent(), "shad_exp");
+            CTxdStore::PopCurrentTxd();
+        }
+    }
+    if (tex) tried = true; // keep retrying until found (textures may not be loaded yet)
+    return tex;
+}
+
 // ---------- neon rendering: continuous soft glow projected on the ground under the car ----------
 // Many large, heavily overlapping additive ground-glow blobs along the underside outline => one smooth halo.
 // No coronas (they were the visible "dots").
@@ -225,6 +248,7 @@ static void DrawNeon() {
     const float midY = (mn.y + mx.y) * 0.5f;
     const float R = 1.35f; // blob radius in metres (big => blobs merge into one continuous glow)
 
+    RwTexture* glowTex = GetGlowTex();
     int n = 0;
     for (int e = 0; e < 4; e++) {
         int a = e, b = (e + 1) & 3;
@@ -240,7 +264,7 @@ static void DrawNeon() {
             unsigned char g8 = (unsigned char)(fminf(rgb[1], 1.0f) * 255);
             unsigned char b8 = (unsigned char)(fminf(rgb[2], 1.0f) * 255);
             // type 1 = additive (glowing) shadow, soft round texture
-            CShadows::StoreShadowToBeRendered(1, CShadows::gpShadowExplosionTex, &p,
+            if (glowTex) CShadows::StoreShadowToBeRendered(1, glowTex, &p,
                 m->up.x * R, m->up.y * R, m->right.x * R, m->right.y * R,
                 150, r8, g8, b8, 4.0f, false, 1.0f, nullptr, false);
             if ((n & 1) == 0) // real light on the surroundings
