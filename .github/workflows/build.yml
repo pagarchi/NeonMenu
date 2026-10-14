@@ -1,0 +1,48 @@
+name: build-asi
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    env:
+      PLUGIN_SDK_DIR: ${{ github.workspace }}\plugin-sdk
+      GTA_SA_DIR: ${{ github.workspace }}\fake_gta
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download plugin-sdk and ImGui
+        shell: cmd
+        run: |
+          mkdir fake_gta
+          git clone --depth 1 https://github.com/DK22Pac/plugin-sdk
+          git clone --depth 1 --branch v1.90.9 https://github.com/ocornut/imgui
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86
+
+      - name: Build plugin-sdk (32-bit, SA 1.0 US)
+        shell: cmd
+        run: |
+          cd plugin-sdk
+          tools\premake\premake5.exe vs2022
+          msbuild plugin_sa\plugin.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143
+
+      - name: Build NeonMenu.asi
+        shell: cmd
+        run: |
+          cl /nologo /LD /MT /O2 /EHsc /std:c++17 /DGTASA /DPLUGIN_SGV_10US /D_CRT_SECURE_NO_WARNINGS /DNOMINMAX ^
+            /I plugin-sdk\plugin_sa /I plugin-sdk\plugin_sa\game_sa /I plugin-sdk\shared /I plugin-sdk\shared\game ^
+            /I imgui /I imgui\backends ^
+            NeonMenu.cpp imgui\imgui.cpp imgui\imgui_draw.cpp imgui\imgui_tables.cpp imgui\imgui_widgets.cpp ^
+            imgui\backends\imgui_impl_dx9.cpp imgui\backends\imgui_impl_win32.cpp ^
+            /Fe:NeonMenu.asi ^
+            /link /MACHINE:X86 d3d9.lib user32.lib gdi32.lib dwmapi.lib plugin-sdk\output\lib\plugin.lib
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeonMenu-asi
+          path: NeonMenu.asi
+          
