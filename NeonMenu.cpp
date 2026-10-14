@@ -1,6 +1,6 @@
 // NeonMenu.asi - GTA San Andreas (PC v1.0 US) neon underglow with ImGui menu
 // Type NEON in-game to open/close the menu (mouse cursor appears).
-// While menu is open: press F8 to flip mouse up/down direction if it feels inverted.
+// While menu is open the game is frozen. Mouse keys: F6/F7 = slower/faster, F8 = flip up/down.
 #include "plugin.h"
 #include "common.h"
 #include "CTimer.h"
@@ -8,10 +8,12 @@
 #include "CModelInfo.h"
 #include "CPointLights.h"
 #include "CCoronas.h"
+#include "CShadows.h"
 #include <d3d9.h>
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <vector>
 #include "imgui.h"
 #include "backends/imgui_impl_dx9.h"
 #include "backends/imgui_impl_win32.h"
@@ -27,41 +29,122 @@ static WNDPROC g_oldProc = nullptr;
 static HWND g_hwnd = nullptr;
 static std::string g_typed;
 
-// ---------- mouse (game uses exclusive DirectInput, so Windows cursor is frozen) ----------
-// GTA SA 1.0 US: CPad::NewMouseControllerState (0xB73418) holds per-frame mouse deltas + buttons
+// ---------- mouse ----------
+// GTA uses exclusive DirectInput, so the Windows cursor is frozen. We read the mouse with Raw Input
+// (WM_INPUT) which gives true relative movement on both axes. Old game-memory method is kept as fallback.
 struct SAMouseState {
     unsigned char lmb, rmb, mmb, wheelUp, wheelDown, bmx1, bmx2, pad;
     float X, Y, Z;
 };
 static SAMouseState* const g_ms = (SAMouseState*)0xB73418;
-static float g_mx = 0.0f, g_my = 0.0f;
-static bool g_centerMouse = false, g_invertY = false;
+static float g_mx = 0.0f, g_my = 0.0f, g_mouseSpeed = 1.0f;
+static bool g_centerMouse = false, g_invertY = false, g_pausedByUs = false;
+static POINT g_lastOs = {0, 0};
+static float g_rawDX = 0.0f, g_rawDY = 0.0f;
+static bool g_rawSeen = false;
+static RAWINPUTDEVICE g_prevRid = {};
+static bool g_hadPrevRid = false;
+
+static void RawMouseOn() {
+    g_hadPrevRid = false;
+    UINT n = 0;
+    GetRegisteredRawInputDevices(nullptr, &n, sizeof(RAWINPUTDEVICE));
+    if (n) {
+        std::vector<RAWINPUTDEVICE> devs(n);
+        if (GetRegisteredRawInputDevices(devs.data(), &n, sizeof(RAWINPUTDEVICE)) != (UINT)-1) {
+            for (UINT i = 0; i < n; i++)
+                if (devs[i].usUsagePage == 1 && devs[i].usUsage == 2) { g_prevRid = devs[i]; g_hadPrevRid = true; }
+        }
+    }
+    RAWINPUTDEVICE rid = {};
+    rid.usUsagePage = 1; rid.usUsage = 2; rid.dwFlags = 0; rid.hwndTarget = g_hwnd;
+    RegisterRawInputDevices(&rid, 1, sizeof(rid));
+    g_rawDX = g_rawDY = 0.0f;
+}
+
+static void RawMouseOff() {
+    if (g_hadPrevRid) {
+        RegisterRawInputDevices(&g_prevRid, 1, sizeof(RAWINPUTDEVICE));
+    } else {
+        RAWINPUTDEVICE rid = {};
+        rid.usUsagePage = 1; rid.usUsage = 2; rid.dwFlags = RIDEV_REMOVE; rid.hwndTarget = nullptr;
+        RegisterRawInputDevices(&rid, 1, sizeof(rid));
+    }
+}
+
+static bool GetOsCursor(POINT& pt) {
+    return GetCursorPos(&pt) && g_hwnd && ScreenToClient(g_hwnd, &pt);
+}
+
+static bool KeyPressedOnce(int vk, bool& prev) {
+    bool now = (GetAsyncKeyState(vk) & 0x8000) != 0;
+    bool fired = now && !prev;
+    prev = now;
+    return fired;
+}
 
 static void UpdateMouse() {
     ImGuiIO& io = ImGui::GetIO();
 
-    static bool f8prev = false;
-    bool f8 = (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
-    if (f8 && !f8prev) g_invertY = !g_invertY;
-    f8prev = f8;
+    static bool f6p = false, f7p = false, f8p = false;
+    if (KeyPressedOnce(VK_F6, f6p)) g_mouseSpeed = fmaxf(0.25f, g_mouseSpeed - 0.25f);
+    if (KeyPressedOnce(VK_F7, f7p)) g_mouseSpeed = fminf(6.0f, g_mouseSpeed + 0.25f);
+    if (KeyPressedOnce(VK_F8, f8p)) g_invertY = !g_invertY;
+
+    POINT pt;
+    bool haveOs = GetOsCursor(pt);
 
     if (g_centerMouse) {
         g_mx = io.DisplaySize.x * 0.5f;
         g_my = io.DisplaySize.y * 0.5f;
         g_centerMouse = false;
+        g_rawDX = g_rawDY = 0.0f;
+        if (haveOs) g_lastOs = pt;
+    } else if (g_rawSeen) {
+        g_mx += g_rawDX * g_mouseSpeed;
+        g_my += (g_invertY ? -g_rawDY : g_rawDY) * g_mouseSpeed;
+        g_rawDX = g_rawDY = 0.0f;
+        if (haveOs) g_lastOs = pt;
+    } else {
+        // fallback (no raw input received yet)
+        bool gameMoved = (g_ms->X != 0.0f || g_ms->Y != 0.0f);
+        bool osMoved = haveOs && (abs(pt.x - g_lastOs.x) >= 2 || abs(pt.y - g_lastOs.y) >= 2);
+        if (gameMoved) {
+            g_mx += g_ms->X * g_mouseSpeed;
+            g_my += (g_invertY ? -g_ms->Y : g_ms->Y) * g_mouseSpeed;
+        } else if (osMoved) {
+            g_mx = (float)pt.x;
+            g_my = (float)pt.y;
+        }
+        if (haveOs) g_lastOs = pt;
     }
-    g_mx += g_ms->X;
-    g_my += g_invertY ? -g_ms->Y : g_ms->Y;
+
     if (g_mx < 0) g_mx = 0;
     if (g_my < 0) g_my = 0;
     if (g_mx > io.DisplaySize.x - 1) g_mx = io.DisplaySize.x - 1;
     if (g_my > io.DisplaySize.y - 1) g_my = io.DisplaySize.y - 1;
 
-    bool ldown = g_ms->lmb || (GetAsyncKeyState(VK_LBUTTON) & 0x8000);
-    bool rdown = g_ms->rmb || (GetAsyncKeyState(VK_RBUTTON) & 0x8000);
+    bool ldown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    bool rdown = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+    if (!g_rawSeen) { ldown = ldown || g_ms->lmb; rdown = rdown || g_ms->rmb; }
     io.AddMousePosEvent(g_mx, g_my);
     io.AddMouseButtonEvent(0, ldown);
     io.AddMouseButtonEvent(1, rdown);
+}
+
+// freeze / unfreeze the game when the menu opens / closes (also works when closed with the X button)
+static void ApplyOpenState() {
+    static bool prevOpen = false;
+    if (g_open == prevOpen) return;
+    prevOpen = g_open;
+    if (g_open) {
+        g_centerMouse = true;
+        if (!CTimer::m_CodePause) { CTimer::m_CodePause = true; g_pausedByUs = true; }
+        RawMouseOn();
+    } else {
+        if (g_pausedByUs) { CTimer::m_CodePause = false; g_pausedByUs = false; }
+        RawMouseOff();
+    }
 }
 
 // ---------- effects: 25 patterns x 10 speeds = 250 styles ----------
@@ -121,7 +204,9 @@ static void Eval(int style, float t, int pt, float u, bool left, bool front, flo
     for (int c = 0; c < 3; c++) outRGB[c] *= k;
 }
 
-// ---------- neon rendering: a ring of lights along the whole underside ----------
+// ---------- neon rendering: continuous soft glow projected on the ground under the car ----------
+// Many large, heavily overlapping additive ground-glow blobs along the underside outline => one smooth halo.
+// No coronas (they were the visible "dots").
 static void DrawNeon() {
     if (!g_enabled) return;
     CVehicle* v = FindPlayerVehicle(-1, false);
@@ -129,15 +214,16 @@ static void DrawNeon() {
     CBaseModelInfo* mi = CModelInfo::GetModelInfo(v->m_nModelIndex);
     if (!mi || !mi->m_pColModel) return;
     CVector mn = mi->m_pColModel->m_boundBox.m_vecMin, mx = mi->m_pColModel->m_boundBox.m_vecMax;
-    float t = CTimer::m_snTimeInMilliseconds / 1000.0f;
+    float t = (float)(GetTickCount() % 600000u) / 1000.0f; // real time, keeps animating while game is frozen
     CMatrix* m = v->m_matrix;
 
     // outline corners: 0=front-left 1=front-right 2=rear-right 3=rear-left
-    const float cxs[4] = {mn.x * 0.82f, mx.x * 0.82f, mx.x * 0.82f, mn.x * 0.82f};
-    const float cys[4] = {mx.y * 0.85f, mx.y * 0.85f, mn.y * 0.85f, mn.y * 0.85f};
-    const int cnt[4] = {3, 6, 3, 6}; // points per edge: front, right side, rear, left side
+    const float cxs[4] = {mn.x * 0.78f, mx.x * 0.78f, mx.x * 0.78f, mn.x * 0.78f};
+    const float cys[4] = {mx.y * 0.80f, mx.y * 0.80f, mn.y * 0.80f, mn.y * 0.80f};
+    const int cnt[4] = {3, 7, 3, 7}; // 20 blobs total (game shadow slots are limited)
     const float z = mn.z + 0.2f;
     const float midY = (mn.y + mx.y) * 0.5f;
+    const float R = 1.35f; // blob radius in metres (big => blobs merge into one continuous glow)
 
     int n = 0;
     for (int e = 0; e < 4; e++) {
@@ -150,11 +236,15 @@ static void DrawNeon() {
             CVector p = m->pos + m->right * x + m->up * y + m->at * z;
             float rgb[3];
             Eval(g_style, t, n, u, x < 0.0f, y > midY, rgb);
-            if ((n & 1) == 0) // every second point also lights the ground (light slots are limited)
-                CPointLights::AddLight(0, p, CVector(0, 0, 0), 4.5f, rgb[0], rgb[1], rgb[2], 0, false, nullptr);
-            CCoronas::RegisterCorona((unsigned)((uintptr_t)v & 0xFFFFFF) + n, nullptr,
-                (unsigned char)(rgb[0] * 255), (unsigned char)(rgb[1] * 255), (unsigned char)(rgb[2] * 255), 255,
-                p, 0.5f, 80.0f, CORONATYPE_SHINYSTAR, FLARETYPE_NONE, false, false, 0, 0.0f, false, 1.5f, 0, 15.0f, false, false);
+            unsigned char r8 = (unsigned char)(fminf(rgb[0], 1.0f) * 255);
+            unsigned char g8 = (unsigned char)(fminf(rgb[1], 1.0f) * 255);
+            unsigned char b8 = (unsigned char)(fminf(rgb[2], 1.0f) * 255);
+            // type 1 = additive (glowing) shadow, soft round texture
+            CShadows::StoreShadowToBeRendered(1, CShadows::gpShadowExplosionTex, &p,
+                m->up.x * R, m->up.y * R, m->right.x * R, m->right.y * R,
+                150, r8, g8, b8, 4.0f, false, 1.0f, nullptr, false);
+            if ((n & 1) == 0) // real light on the surroundings
+                CPointLights::AddLight(0, p, CVector(0, 0, 0), 5.0f, rgb[0] * 0.8f, rgb[1] * 0.8f, rgb[2] * 0.8f, 0, false, nullptr);
         }
     }
 }
@@ -186,7 +276,7 @@ static void DrawMenu() {
     ImGui::SameLine();
     ImGui::Text("pattern %d/25  speed %d/10", (g_style - 1) / 10 + 1, (g_style - 1) % 10 + 1);
     ImGui::TextWrapped("Get in a car. Type NEON again to close.");
-    ImGui::TextWrapped("F8: flip mouse up/down if inverted (now: %s)", g_invertY ? "flipped" : "normal");
+    ImGui::TextWrapped("Mouse: F6/F7 slower/faster (x%.2f), F8 flip up/down (%s)", g_mouseSpeed, g_invertY ? "flipped" : "normal");
     ImGui::End();
 }
 
@@ -196,12 +286,22 @@ static LRESULT CALLBACK HookedWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (g_typed.size() > 16) g_typed.erase(0, g_typed.size() - 16);
         if (g_typed.size() >= 4 && g_typed.compare(g_typed.size() - 4, 4, "NEON") == 0) {
             g_open = !g_open; g_typed.clear();
-            if (g_open) g_centerMouse = true;
-            ShowCursor(g_open ? TRUE : FALSE);
+        }
+    }
+    if (g_open && m == WM_INPUT) {
+        RAWINPUT ri;
+        UINT sz = sizeof(ri);
+        if (GetRawInputData((HRAWINPUT)l, RID_INPUT, &ri, &sz, sizeof(RAWINPUTHEADER)) != (UINT)-1 &&
+            ri.header.dwType == RIM_TYPEMOUSE) {
+            if (!(ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) {
+                g_rawDX += (float)ri.data.mouse.lLastX;
+                g_rawDY += (float)ri.data.mouse.lLastY;
+            }
+            g_rawSeen = true;
         }
     }
     if (g_open) {
-        ImGui_ImplWin32_WndProcHandler(h, m, w, l);
+        if (m != WM_MOUSEMOVE) ImGui_ImplWin32_WndProcHandler(h, m, w, l);
         if (m >= WM_MOUSEFIRST && m <= WM_MOUSELAST) return TRUE;
     }
     return CallWindowProc(g_oldProc, h, m, w, l);
@@ -221,6 +321,7 @@ static void InitImGui() {
 
 static void OnDraw() {
     if (!g_inited) InitImGui();
+    ApplyOpenState();
     DrawNeon();
     if (!g_open) return;
     ImGui::GetIO().MouseDrawCursor = true;
