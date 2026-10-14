@@ -23,22 +23,26 @@ jobs:
         with:
           arch: x86
 
-      - name: Build plugin-sdk (finds its own files)
+      - name: Build plugin-sdk (SA project only)
         shell: pwsh
         run: |
-          cd plugin-sdk
-          $lua = Get-ChildItem -Recurse -Filter premake5.lua | Select-Object -First 1
-          $exe = Get-ChildItem -Recurse -Filter premake5.exe | Select-Object -First 1
-          "LUA: $($lua.FullName)"
-          "EXE: $($exe.FullName)"
-          if ($lua -and $exe) { Push-Location $lua.DirectoryName; & $exe.FullName vs2022; Pop-Location }
-          "--- projects found:"
-          Get-ChildItem -Recurse -Include *.sln,*.vcxproj | ForEach-Object { $_.FullName }
-          $proj = Get-ChildItem -Recurse -Filter plugin.vcxproj | Where-Object { $_.FullName -match 'plugin_sa' } | Select-Object -First 1
+          cd plugin-sdk\tools\premake
+          .\premake5.exe vs2022
+          cd ..\..
+          $proj = Get-ChildItem -Recurse -Filter Plugin_SA.vcxproj | Select-Object -First 1
           "PROJ: $($proj.FullName)"
-          msbuild $proj.FullName /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143
+          $xml = [xml](Get-Content $proj.FullName)
+          $cfgs = @($xml.Project.ItemGroup.ProjectConfiguration | ForEach-Object { $_.Include })
+          "CONFIGS: " + ($cfgs -join " ; ")
+          $pick = $cfgs | Where-Object { $_ -match 'Release' -and $_ -notmatch 'Debug' -and $_ -match 'Win32|x86' } | Select-Object -First 1
+          if (-not $pick) { $pick = $cfgs | Where-Object { $_ -match 'Release' } | Select-Object -First 1 }
+          "PICK: $pick"
+          $conf, $plat = $pick.Split('|')
+          msbuild $proj.FullName /p:Configuration="$conf" /p:Platform="$plat" /p:PlatformToolset=v143 /m
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          $lib = Get-ChildItem -Recurse -Filter plugin.lib | Select-Object -First 1
+          "--- libs found:"
+          Get-ChildItem -Recurse -Filter *.lib | Where-Object { $_.FullName -match 'output' } | ForEach-Object { $_.FullName }
+          $lib = Get-ChildItem -Recurse -Filter *.lib | Where-Object { $_.FullName -match 'output' -and $_.Name -notmatch '_d' } | Select-Object -First 1
           "LIB: $($lib.FullName)"
           "PLUGIN_LIB=$($lib.FullName)" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
 
