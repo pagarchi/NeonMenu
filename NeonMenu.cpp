@@ -1,5 +1,7 @@
 // NeonMenu.asi - GTA San Andreas (PC v1.0 US) neon underglow with ImGui menu
+// Neon menu mod by : Parsa Rsi
 // Type NEON in-game to open/close the menu (mouse cursor appears).
+// Two style groups: NORMAL (250 classic patterns) and EMOJI (11 animated multi-colour neon shapes).
 // While menu is open the game is frozen. Mouse keys: F6/F7 = slower/faster, F8 = flip up/down.
 #include "plugin.h"
 #include "common.h"
@@ -10,11 +12,15 @@
 #include "CCoronas.h"
 #include "CShadows.h"
 #include "CTxdStore.h"
+#include "CWorld.h"
 #include <d3d9.h>
 #include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <cfloat>
+#include <cstring>
+#include <algorithm>
 #include "imgui.h"
 #include "backends/imgui_impl_dx9.h"
 #include "backends/imgui_impl_win32.h"
@@ -29,6 +35,11 @@ static float g_col[3][3] = {{0.0f, 0.6f, 1.0f}, {1.0f, 0.0f, 0.5f}, {0.2f, 1.0f,
 static WNDPROC g_oldProc = nullptr;
 static HWND g_hwnd = nullptr;
 static std::string g_typed;
+static int g_mode = 0;          // 0 = normal styles, 1 = emoji styles
+static int g_emoji = 0;         // 0..10
+static float g_esize = 1.0f, g_estretch = 1.25f, g_eheight = 0.15f, g_ebright = 1.0f;
+static ImFont* g_fontBody = nullptr;
+static ImFont* g_fontTitle = nullptr;
 
 // ---------- mouse ----------
 // GTA uses exclusive DirectInput, so the Windows cursor is frozen. We read the mouse with Raw Input
@@ -273,97 +284,152 @@ static void DrawNeon() {
     }
 }
 
-// ---------- menu ----------
-static void DrawMenu() {
-    ImGui::SetNextWindowSize(ImVec2(380, 560), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Neon Underglow", &g_open);
-    ImGui::Checkbox("Neon on", &g_enabled);
-    ImGui::Text("Colors:"); ImGui::SameLine();
-    ImGui::RadioButton("1", &g_colorCount, 1); ImGui::SameLine();
-    ImGui::RadioButton("2", &g_colorCount, 2); ImGui::SameLine();
-    ImGui::RadioButton("3", &g_colorCount, 3);
-    if (g_slot >= g_colorCount) g_slot = g_colorCount - 1;
-    if (g_colorCount > 1) {
-        for (int i = 0; i < g_colorCount; i++) {
-            char b[16]; sprintf(b, "Color %d", i + 1);
-            if (i) ImGui::SameLine();
-            if (ImGui::RadioButton(b, g_slot == i)) g_slot = i;
+// =====================================================================================
+//  EMOJI NEON ENGINE
+//  Shapes are built from (a) translucent colour fills, (b) dense miniature neon dots with glow,
+//  and drawn flat on the ground under the car with a depth test (the car body hides the middle,
+//  the rest sticks out around the car). Every shape keeps its own fixed colours.
+// =====================================================================================
+namespace emo {
+
+static const float PI2 = 6.2831853f;
+static const float PI1 = 3.1415927f;
+
+struct V2 { float x, y; };
+struct Col { int r, g, b; };
+struct Dot { float x, y; unsigned char hr, hg, hb, cr, cg, cb; float ha, ca, hrad, crad; };
+struct Tri { float x[3], y[3]; unsigned char r, g, b, a; };
+struct Vtx { float x, y, z; DWORD col; float u, v; };
+
+static std::vector<Dot> g_dots;
+static std::vector<Tri> g_tris;
+static std::vector<V2> g_tmp;
+static float g_bk = 5.0f, g_bky = 5.0f;   // base metres per unit (x / y)
+static float g_k = 5.0f, g_ky = 5.0f;     // current (after per-shape pulse scale)
+static float g_sumR = 0, g_sumG = 0, g_sumB = 0, g_sumW = 0;
+
+static const Col cYEL  = {255, 214, 25};
+static const Col cORG  = {255, 140, 20};
+static const Col cRED  = {255, 35, 60};
+static const Col cWHT  = {240, 248, 255};
+static const Col cCYN  = {30, 230, 255};
+static const Col cBLU  = {50, 120, 255};
+static const Col cPNK  = {255, 80, 175};
+static const Col cGRN  = {50, 255, 110};
+static const Col cDRK  = {45, 22, 5};
+static const Col cBLK  = {15, 5, 22};
+static const Col cICE  = {150, 225, 255};
+static const Col cGLD  = {255, 196, 30};
+
+static inline float Sat01(float x) { return x < 0 ? 0 : (x > 1 ? 1 : x); }
+static inline float Pls(float t, float f, float ph = 0.0f) { return 0.5f + 0.5f * sinf(PI2 * (t * f + ph)); }
+static inline V2 pt2(float x, float y) { V2 v = {x, y}; return v; }
+static inline Col MkC(int r, int g, int b) { Col c = {r, g, b}; return c; }
+static Col Mix(Col a, Col b, float t) {
+    Col c; c.r = (int)(a.r + (b.r - a.r) * t); c.g = (int)(a.g + (b.g - a.g) * t); c.b = (int)(a.b + (b.b - a.b) * t); return c;
+}
+static Col HsvC(float h) {
+    float r, g, b; ImGui::ColorConvertHSVtoRGB(h - floorf(h), 0.9f, 1.0f, r, g, b);
+    Col c; c.r = (int)(r * 255); c.g = (int)(g * 255); c.b = (int)(b * 255); return c;
+}
+static void SetScl(float s) { g_k = g_bk * s; g_ky = g_bky * s; }
+
+// ---- neon dots ----
+static void AddDot(float ux, float uy, Col c, float inten, float crad = 0.05f, float hrad = 0.27f) {
+    Dot d; Col w = Mix(c, cWHT, 0.45f);
+    d.x = ux * g_k; d.y = uy * g_ky;
+    d.hr = (unsigned char)c.r; d.hg = (unsigned char)c.g; d.hb = (unsigned char)c.b;
+    d.cr = (unsigned char)w.r; d.cg = (unsigned char)w.g; d.cb = (unsigned char)w.b;
+    d.ha = 0.12f * inten; d.ca = Sat01(inten); d.hrad = hrad; d.crad = crad;
+    g_dots.push_back(d);
+    g_sumR += c.r * inten; g_sumG += c.g * inten; g_sumB += c.b * inten; g_sumW += inten;
+}
+static void Glow(float ux, float uy, Col c, float radM, float alpha) {
+    Dot d;
+    d.x = ux * g_k; d.y = uy * g_ky;
+    d.hr = (unsigned char)c.r; d.hg = (unsigned char)c.g; d.hb = (unsigned char)c.b;
+    d.cr = d.hr; d.cg = d.hg; d.cb = d.hb;
+    d.ha = alpha; d.ca = 0.0f; d.hrad = radM; d.crad = 0.01f;
+    g_dots.push_back(d);
+}
+static void StrokePts(const V2* p, int n, bool closed, Col c, float inten = 1.0f, float crad = 0.05f, float hrad = 0.27f, float stepM = 0.075f) {
+    int segs = closed ? n : n - 1;
+    float carry = 0.0f;
+    for (int i = 0; i < segs; i++) {
+        V2 a = p[i], b = p[(i + 1) % n];
+        float dx = (b.x - a.x) * g_k, dy = (b.y - a.y) * g_ky;
+        float L = sqrtf(dx * dx + dy * dy);
+        if (L < 1e-5f) continue;
+        float d = carry;
+        while (d <= L) {
+            float s = d / L;
+            AddDot(a.x + (b.x - a.x) * s, a.y + (b.y - a.y) * s, c, inten, crad, hrad);
+            d += stepM;
         }
+        carry = d - L;
     }
-    ImGui::ColorPicker3("##wheel", g_col[g_slot],
-        ImGuiColorEditFlags_PickerHueWheel | ImGuiColorEditFlags_NoSidePreview | ImGuiColorEditFlags_DisplayRGB);
-    ImGui::Separator();
-    ImGui::SliderInt("Style", &g_style, 1, 250);
-    if (ImGui::Button("<")) g_style = g_style > 1 ? g_style - 1 : 250;
-    ImGui::SameLine();
-    if (ImGui::Button(">")) g_style = g_style < 250 ? g_style + 1 : 1;
-    ImGui::SameLine();
-    ImGui::Text("pattern %d/25  speed %d/10", (g_style - 1) / 10 + 1, (g_style - 1) % 10 + 1);
-    ImGui::TextWrapped("Get in a car. Type NEON again to close.");
-    ImGui::TextWrapped("Mouse: F6/F7 slower/faster (x%.2f), F8 flip up/down (%s)", g_mouseSpeed, g_invertY ? "flipped" : "normal");
-    ImGui::End();
+}
+static void Line(float x0, float y0, float x1, float y1, Col c, float inten = 1.0f, float crad = 0.05f, float hrad = 0.27f) {
+    V2 p[2] = {pt2(x0, y0), pt2(x1, y1)};
+    StrokePts(p, 2, false, c, inten, crad, hrad);
+}
+static int AutoN(float rx, float ry, float span) {
+    float rm = fmaxf(rx * g_k, ry * g_ky);
+    int n = (int)(fabsf(span) * rm / 0.07f);
+    return n < 12 ? 12 : (n > 160 ? 160 : n);
+}
+static void EllPts(float cx, float cy, float rx, float ry, float a0, float a1, int n) {
+    g_tmp.resize(n + 1);
+    for (int i = 0; i <= n; i++) { float a = a0 + (a1 - a0) * i / n; g_tmp[i] = pt2(cx + rx * cosf(a), cy + ry * sinf(a)); }
+}
+static void Ring(float cx, float cy, float rx, float ry, Col c, float inten = 1.0f, float a0 = 0.0f, float a1 = PI2) {
+    int n = AutoN(rx, ry, a1 - a0);
+    EllPts(cx, cy, rx, ry, a0, a1, n);
+    StrokePts(g_tmp.data(), n + 1, false, c, inten);
 }
 
-static LRESULT CALLBACK HookedWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    if (m == WM_CHAR) {
-        g_typed += (char)toupper((int)w);
-        if (g_typed.size() > 16) g_typed.erase(0, g_typed.size() - 16);
-        if (g_typed.size() >= 4 && g_typed.compare(g_typed.size() - 4, 4, "NEON") == 0) {
-            g_open = !g_open; g_typed.clear();
-        }
-    }
-    if (g_open && m == WM_INPUT) {
-        RAWINPUT ri;
-        UINT sz = sizeof(ri);
-        if (GetRawInputData((HRAWINPUT)l, RID_INPUT, &ri, &sz, sizeof(RAWINPUTHEADER)) != (UINT)-1 &&
-            ri.header.dwType == RIM_TYPEMOUSE) {
-            if (!(ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) {
-                g_rawDX += (float)ri.data.mouse.lLastX;
-                g_rawDY += (float)ri.data.mouse.lLastY;
-            }
-            g_rawSeen = true;
-        }
-    }
-    if (g_open) {
-        if (m != WM_MOUSEMOVE) ImGui_ImplWin32_WndProcHandler(h, m, w, l);
-        if (m >= WM_MOUSEFIRST && m <= WM_MOUSELAST) return TRUE;
-    }
-    return CallWindowProc(g_oldProc, h, m, w, l);
+// ---- translucent fills (colour-true, alpha blended) ----
+static void AddTriM(float x0, float y0, float x1, float y1, float x2, float y2, Col c, float al) {
+    Tri t; t.x[0] = x0; t.y[0] = y0; t.x[1] = x1; t.y[1] = y1; t.x[2] = x2; t.y[2] = y2;
+    t.r = (unsigned char)c.r; t.g = (unsigned char)c.g; t.b = (unsigned char)c.b; t.a = (unsigned char)(Sat01(al) * 255);
+    g_tris.push_back(t);
 }
-
-static void InitImGui() {
-    IDirect3DDevice9* dev = (IDirect3DDevice9*)RwD3D9GetCurrentD3DDevice();
-    D3DDEVICE_CREATION_PARAMETERS cp; dev->GetCreationParameters(&cp);
-    g_hwnd = cp.hFocusWindow;
-    ImGui::CreateContext();
-    ImGui::GetIO().IniFilename = nullptr;
-    ImGui_ImplWin32_Init(g_hwnd);
-    ImGui_ImplDX9_Init(dev);
-    g_oldProc = (WNDPROC)SetWindowLongPtr(g_hwnd, GWLP_WNDPROC, (LONG_PTR)HookedWndProc);
-    g_inited = true;
+static void AddTriU(V2 a, V2 b, V2 c, Col col, float al) {
+    AddTriM(a.x * g_k, a.y * g_ky, b.x * g_k, b.y * g_ky, c.x * g_k, c.y * g_ky, col, al);
 }
-
-static void OnDraw() {
-    if (!g_inited) InitImGui();
-    ApplyOpenState();
-    DrawNeon();
-    if (!g_open) return;
-    ImGui::GetIO().MouseDrawCursor = true;
-    ImGui_ImplDX9_NewFrame();
-    ImGui_ImplWin32_NewFrame();
-    UpdateMouse();
-    ImGui::NewFrame();
-    DrawMenu();
-    ImGui::EndFrame();
-    ImGui::Render();
-    ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+static void FillFan(V2 ctr, const V2* p, int n, bool closed, Col col, float al) {
+    int e = closed ? n : n - 1;
+    for (int i = 0; i < e; i++) AddTriU(ctr, p[i], p[(i + 1) % n], col, al);
 }
-
-class NeonMenu {
-public:
-    NeonMenu() {
-        Events::drawingEvent += OnDraw;
-        Events::d3dLostEvent += [] { if (g_inited) ImGui_ImplDX9_InvalidateDeviceObjects(); };
-        Events::d3dResetEvent += [] { if (g_inited) ImGui_ImplDX9_CreateDeviceObjects(); };
-    }
-} g_neonMenu;
+static void FillEll(float cx, float cy, float rx, float ry, Col col, float al, float a0 = 0.0f, float a1 = PI2) {
+    int n = AutoN(rx, ry, a1 - a0);
+    EllPts(cx, cy, rx, ry, a0, a1, n);
+    FillFan(pt2(cx, cy), g_tmp.data(), n + 1, false, col, al);
+}
+static void FillDisc(float cx, float cy, float rM, Col col, float al) { FillEll(cx, cy, rM / g_k, rM / g_ky, col, al); }
+static void FillStrip(const V2* A, const V2* B, int n, Col col, float al) {
+    for (int i = 0; i < n - 1; i++) { AddTriU(A[i], A[i + 1], B[i + 1], col, al); AddTriU(A[i], B[i + 1], B[i], col, al); }
+}
+static bool InTri(V2 p, V2 a, V2 b, V2 c) {
+    float d1 = (p.x - b.x) * (a.y - b.y) - (a.x - b.x) * (p.y - b.y);
+    float d2 = (p.x - c.x) * (b.y - c.y) - (b.x - c.x) * (p.y - c.y);
+    float d3 = (p.x - a.x) * (c.y - a.y) - (c.x - a.x) * (p.y - a.y);
+    bool neg = (d1 < 0) || (d2 < 0) || (d3 < 0), pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+    return !(neg && pos);
+}
+// ear clipping, for small simple polygons (star, bolt, crown)
+static void FillPoly(const V2* p, int n, Col col, float al) {
+    if (n < 3) return;
+    std::vector<int> idx(n);
+    float area = 0;
+    for (int i = 0; i < n; i++) { idx[i] = i; int j = (i + 1) % n; area += p[i].x * p[j].y - p[j].x * p[i].y; }
+    bool ccw = area > 0;
+    int guard = 0;
+    while (idx.size() > 3 && guard++ < 500) {
+        bool clipped = false;
+        int m = (int)idx.size();
+        for (int i = 0; i < m; i++) {
+            int i0 = idx[(i + m - 1) % m], i1 = idx[i], i2 = idx[(i + 1) % m];
+            V2 a = p[i0], b = p[i1], c = p[i2];
+            float cr = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+            if ((cr > 0) != ccw || fabsf(cr) < 1e
