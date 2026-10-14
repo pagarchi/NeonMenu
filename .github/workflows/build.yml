@@ -1,64 +1,38 @@
-name: build-asi
+name: Build SkyMod
 on:
-  workflow_dispatch:
   push:
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: windows-2022
     env:
-      PLUGIN_SDK_DIR: ${{ github.workspace }}\plugin-sdk
-      GTA_SA_DIR: ${{ github.workspace }}\fake_gta
+      PLUGIN_SDK_DIR: C:\plugin-sdk
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download plugin-sdk and ImGui
-        shell: cmd
-        run: |
-          mkdir fake_gta
-          git clone --depth 1 https://github.com/DK22Pac/plugin-sdk
-          git clone --depth 1 --branch v1.90.9 https://github.com/ocornut/imgui
+      - name: Get plugin-sdk
+        run: git clone --depth 1 https://github.com/DK22Pac/plugin-sdk.git C:\plugin-sdk
 
+      - uses: microsoft/setup-msbuild@v2
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x86
 
-      - name: Build plugin-sdk (SA project only)
-        shell: pwsh
-        run: |
-          cd plugin-sdk\tools\premake
-          .\premake5.exe vs2022
-          cd ..\..
-          $proj = Get-ChildItem -Recurse -Filter Plugin_SA.vcxproj | Select-Object -First 1
-          "PROJ: $($proj.FullName)"
-          $xml = [xml](Get-Content $proj.FullName)
-          $cfgs = @($xml.Project.ItemGroup.ProjectConfiguration | ForEach-Object { $_.Include })
-          "CONFIGS: " + ($cfgs -join " ; ")
-          $pick = $cfgs | Where-Object { $_ -match 'Release' -and $_ -notmatch 'Debug' -and $_ -match 'Win32|x86' } | Select-Object -First 1
-          if (-not $pick) { $pick = $cfgs | Where-Object { $_ -match 'Release' } | Select-Object -First 1 }
-          "PICK: $pick"
-          $conf, $plat = $pick.Split('|')
-          msbuild $proj.FullName /p:Configuration="$conf" /p:Platform="$plat" /p:PlatformToolset=v143 /m
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          "--- libs found:"
-          Get-ChildItem -Recurse -Filter *.lib | Where-Object { $_.FullName -match 'output' } | ForEach-Object { $_.FullName }
-          $lib = Get-ChildItem -Recurse -Filter *.lib | Where-Object { $_.FullName -match 'output' -and $_.Name -notmatch '_d' } | Select-Object -First 1
-          "LIB: $($lib.FullName)"
-          "PLUGIN_LIB=$($lib.FullName)" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+      - name: Build plugin-sdk library (GTA SA)
+        run: msbuild C:\plugin-sdk\plugin_sa\plugin_sa.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /p:PLUGIN_SDK_DIR=C:\plugin-sdk\
 
-      - name: Build NeonMenu.asi
+      - name: Compile SkyMod.asi
         shell: cmd
         run: |
-          cl /nologo /LD /MT /O2 /EHsc /std:c++latest /DGTASA /DPLUGIN_SGV_10US /DRW /D_DX9_SDK_INSTALLED /D_MBCS /D_CRT_SECURE_NO_WARNINGS /DNOMINMAX ^
-            /I plugin-sdk\plugin_sa /I plugin-sdk\plugin_sa\game_sa /I plugin-sdk\plugin_sa\game_sa\enums /I plugin-sdk\plugin_sa\game_sa\rw ^
-            /I plugin-sdk\safetyhook /I plugin-sdk\shared /I plugin-sdk\shared\game ^
-            /I imgui /I imgui\backends ^
-            NeonMenu.cpp imgui\imgui.cpp imgui\imgui_draw.cpp imgui\imgui_tables.cpp imgui\imgui_widgets.cpp ^
-            imgui\backends\imgui_impl_dx9.cpp imgui\backends\imgui_impl_win32.cpp ^
-            /Fe:NeonMenu.asi ^
-            /link /MACHINE:X86 d3d9.lib user32.lib gdi32.lib dwmapi.lib "%PLUGIN_LIB%"
+          dir /s /b C:\plugin-sdk\output\*.lib
+          cl /nologo /LD /EHsc /MT /O2 /std:c++17 /DGTASA /DPLUGIN_SGV_10US /D_CRT_SECURE_NO_WARNINGS /DNOMINMAX ^
+            /I"%PLUGIN_SDK_DIR%\plugin_sa" /I"%PLUGIN_SDK_DIR%\plugin_sa\game_sa" ^
+            /I"%PLUGIN_SDK_DIR%\shared" /I"%PLUGIN_SDK_DIR%\shared\game" ^
+            SkyMod.cpp /Fe:SkyMod.asi ^
+            /link /LIBPATH:"%PLUGIN_SDK_DIR%\output\lib" plugin.lib user32.lib
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NeonMenu-asi
-          path: NeonMenu.asi
+          name: SkyMod
+          path: SkyMod.asi
