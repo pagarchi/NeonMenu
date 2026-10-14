@@ -22,11 +22,16 @@ jobs:
 
       - name: Generate VS projects
         shell: pwsh
-        working-directory: C:\plugin-sdk
+        working-directory: C:\plugin-sdk\tools\premake
+        env:
+          GTA_SA_DIR: C:\gta
+          GTA_VC_DIR: C:\gta
+          GTA_III_DIR: C:\gta
+          GTA_II_DIR: C:\gta
+          GTA_IV_DIR: C:\gta
         run: |
-          Get-ChildItem -Recurse -Filter premake5.lua | ForEach-Object { $_.FullName }
           C:\premake\premake5.exe vs2022
-          Get-ChildItem -Recurse -Filter *.vcxproj | ForEach-Object { $_.FullName }
+          Get-ChildItem C:\plugin-sdk -Recurse -Filter *.vcxproj | ForEach-Object { $_.FullName }
 
       - uses: microsoft/setup-msbuild@v2
       - uses: ilammy/msvc-dev-cmd@v1
