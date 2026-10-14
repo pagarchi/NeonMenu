@@ -49,20 +49,28 @@ jobs:
       - name: Compile SkyMod.asi
         shell: pwsh
         run: |
-          $lib = Get-ChildItem C:\plugin-sdk -Recurse -Filter plugin.lib | Select-Object -First 1
-          if (-not $lib) { Get-ChildItem C:\plugin-sdk -Recurse -Filter *.lib | ForEach-Object { $_.FullName }; exit 1 }
-          Write-Host "Using lib: $($lib.FullName)"
-          $incDirs = @("C:\plugin-sdk\plugin_sa", "C:\plugin-sdk\shared", "C:\plugin-sdk\injector") |
-            ForEach-Object { Get-ChildItem $_ -Recurse -Filter *.h -File } |
-            ForEach-Object { $_.DirectoryName }
-          $incDirs += "C:\plugin-sdk\plugin_sa", "C:\plugin-sdk\shared"
-          $incArgs = $incDirs | Sort-Object -Unique | ForEach-Object { "/I$_" }
-          $clArgs = @("/nologo","/LD","/EHsc","/MT","/O2","/std:c++latest",
-                      "/DGTASA","/DPLUGIN_SGV_10US","/D_CRT_SECURE_NO_WARNINGS","/DNOMINMAX") +
-                    $incArgs +
-                    @("SkyMod.cpp","/Fe:SkyMod.asi","/link","/LIBPATH:$($lib.DirectoryName)","plugin.lib","user32.lib")
-          & cl @clArgs
+          $proj = Get-ChildItem C:\plugin-sdk\examples -Recurse -Filter Test.vcxproj | Select-Object -First 1
+          if (-not $proj) { $proj = Get-ChildItem C:\plugin-sdk\examples -Recurse -Filter *.vcxproj | Select-Object -First 1 }
+          if (-not $proj) { Write-Host "no example project found"; exit 1 }
+          Write-Host "Template project: $($proj.FullName)"
+          Select-String -Path $proj.FullName -Pattern "AdditionalIncludeDirectories|PreprocessorDefinitions|LanguageStandard|OutDir|TargetExt|AdditionalDependencies|PostBuild" | ForEach-Object { $_.Line.Trim() }
+          New-Item -ItemType Directory -Force C:\gta, C:\out | Out-Null
+          $targets = @(
+            '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">',
+            '  <Target Name="SwapSources" BeforeTargets="SelectClCompile;ClCompile">',
+            '    <ItemGroup>',
+            '      <ClCompile Remove="@(ClCompile)" />',
+            '      <ClCompile Include="$(SkyModSrc)"><LanguageStandard>stdcpplatest</LanguageStandard></ClCompile>',
+            '    </ItemGroup>',
+            '  </Target>',
+            '</Project>'
+          )
+          Set-Content -Path C:\swap.targets -Value $targets
+          msbuild $proj.FullName /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /p:TargetName=SkyMod /p:TargetExt=.asi /p:OutDir=C:\out\ "/p:SkyModSrc=$env:GITHUB_WORKSPACE\SkyMod.cpp" /p:CustomAfterMicrosoftCommonTargets=C:\swap.targets
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          $asi = Get-ChildItem C:\out, C:\gta, C:\plugin-sdk -Recurse -Filter SkyMod.asi -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $asi) { Write-Host "SkyMod.asi not found"; exit 1 }
+          Copy-Item $asi.FullName "$env:GITHUB_WORKSPACE\SkyMod.asi"
 
       - uses: actions/upload-artifact@v4
         with:
