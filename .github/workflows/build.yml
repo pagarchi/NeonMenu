@@ -47,12 +47,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Compile SkyMod.asi
+        shell: pwsh
         run: |
           $lib = Get-ChildItem C:\plugin-sdk -Recurse -Filter plugin.lib | Select-Object -First 1
           if (-not $lib) { Get-ChildItem C:\plugin-sdk -Recurse -Filter *.lib | ForEach-Object { $_.FullName }; exit 1 }
           Write-Host "Using lib: $($lib.FullName)"
-          $d = "C:\plugin-sdk"
-          cl /nologo /LD /EHsc /MT /O2 /std:c++20 /DGTASA /DPLUGIN_SGV_10US /D_CRT_SECURE_NO_WARNINGS /DNOMINMAX "/I$d\plugin_sa" "/I$d\plugin_sa\game_sa" "/I$d\shared" "/I$d\shared\game" SkyMod.cpp /Fe:SkyMod.asi /link "/LIBPATH:$($lib.DirectoryName)" plugin.lib user32.lib
+          $incDirs = @("C:\plugin-sdk\plugin_sa", "C:\plugin-sdk\shared", "C:\plugin-sdk\injector") |
+            ForEach-Object { Get-ChildItem $_ -Recurse -Filter *.h -File } |
+            ForEach-Object { $_.DirectoryName }
+          $incDirs += "C:\plugin-sdk\plugin_sa", "C:\plugin-sdk\shared"
+          $incArgs = $incDirs | Sort-Object -Unique | ForEach-Object { "/I$_" }
+          $clArgs = @("/nologo","/LD","/EHsc","/MT","/O2","/std:c++latest",
+                      "/DGTASA","/DPLUGIN_SGV_10US","/D_CRT_SECURE_NO_WARNINGS","/DNOMINMAX") +
+                    $incArgs +
+                    @("SkyMod.cpp","/Fe:SkyMod.asi","/link","/LIBPATH:$($lib.DirectoryName)","plugin.lib","user32.lib")
+          & cl @clArgs
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - uses: actions/upload-artifact@v4
