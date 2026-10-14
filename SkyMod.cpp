@@ -147,9 +147,13 @@ static bool Pressed(int vk) {
     return r;
 }
 
+static bool txdOk = false;
+
 static void LoadTextures() {
     if (txdLoaded) return;
     txdLoaded = true;
+    // if skyfx.txd is missing, do nothing (loading a missing TXD can freeze/crash the game)
+    if (GetFileAttributesA("SkyMod\\skyfx.txd") == INVALID_FILE_ATTRIBUTES) return;
     txdSlot = CTxdStore::AddTxdSlot("skyfx");
     CTxdStore::LoadTxd(txdSlot, "SkyMod\\skyfx.txd");
     CTxdStore::AddRef(txdSlot);
@@ -157,6 +161,7 @@ static void LoadTextures() {
     CTxdStore::SetCurrentTxd(txdSlot);
     for (int i = 0; i < NS; i++) tex[i].SetTexture((char*)S[i].tex);
     CTxdStore::PopCurrentTxd();
+    txdOk = true;
 }
 
 static void ApplyPreset(const Preset& p) {
@@ -184,6 +189,7 @@ static bool Project(float az, float elev, float dist, float& x, float& y, float&
 }
 
 static void DrawSprite(int i, float t) {
+    if (!txdOk) return;
     float az = t * S[i].speed, x, y, sc;
     if (!Project(az, S[i].elev, 400.0f, x, y, sc)) return;
     float sz = S[i].size * (SCREEN_HEIGHT / 448.0f);
