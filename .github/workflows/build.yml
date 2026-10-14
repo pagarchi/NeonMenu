@@ -23,12 +23,24 @@ jobs:
         with:
           arch: x86
 
-      - name: Build plugin-sdk (32-bit, SA 1.0 US)
-        shell: cmd
+      - name: Build plugin-sdk (finds its own files)
+        shell: pwsh
         run: |
           cd plugin-sdk
-          tools\premake\premake5.exe vs2022
-          msbuild plugin_sa\plugin.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143
+          $lua = Get-ChildItem -Recurse -Filter premake5.lua | Select-Object -First 1
+          $exe = Get-ChildItem -Recurse -Filter premake5.exe | Select-Object -First 1
+          "LUA: $($lua.FullName)"
+          "EXE: $($exe.FullName)"
+          if ($lua -and $exe) { Push-Location $lua.DirectoryName; & $exe.FullName vs2022; Pop-Location }
+          "--- projects found:"
+          Get-ChildItem -Recurse -Include *.sln,*.vcxproj | ForEach-Object { $_.FullName }
+          $proj = Get-ChildItem -Recurse -Filter plugin.vcxproj | Where-Object { $_.FullName -match 'plugin_sa' } | Select-Object -First 1
+          "PROJ: $($proj.FullName)"
+          msbuild $proj.FullName /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $lib = Get-ChildItem -Recurse -Filter plugin.lib | Select-Object -First 1
+          "LIB: $($lib.FullName)"
+          "PLUGIN_LIB=$($lib.FullName)" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
 
       - name: Build NeonMenu.asi
         shell: cmd
@@ -39,10 +51,9 @@ jobs:
             NeonMenu.cpp imgui\imgui.cpp imgui\imgui_draw.cpp imgui\imgui_tables.cpp imgui\imgui_widgets.cpp ^
             imgui\backends\imgui_impl_dx9.cpp imgui\backends\imgui_impl_win32.cpp ^
             /Fe:NeonMenu.asi ^
-            /link /MACHINE:X86 d3d9.lib user32.lib gdi32.lib dwmapi.lib plugin-sdk\output\lib\plugin.lib
+            /link /MACHINE:X86 d3d9.lib user32.lib gdi32.lib dwmapi.lib "%PLUGIN_LIB%"
 
       - uses: actions/upload-artifact@v4
         with:
           name: NeonMenu-asi
           path: NeonMenu.asi
-          
