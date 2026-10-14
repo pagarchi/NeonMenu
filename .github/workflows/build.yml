@@ -49,28 +49,29 @@ jobs:
       - name: Compile SkyMod.asi
         shell: pwsh
         run: |
-          $proj = Get-ChildItem C:\plugin-sdk\examples -Recurse -Filter Test.vcxproj | Select-Object -First 1
-          if (-not $proj) { $proj = Get-ChildItem C:\plugin-sdk\examples -Recurse -Filter *.vcxproj | Select-Object -First 1 }
-          if (-not $proj) { Write-Host "no example project found"; exit 1 }
-          Write-Host "Template project: $($proj.FullName)"
-          Select-String -Path $proj.FullName -Pattern "AdditionalIncludeDirectories|PreprocessorDefinitions|LanguageStandard|OutDir|TargetExt|AdditionalDependencies|PostBuild" | ForEach-Object { $_.Line.Trim() }
-          New-Item -ItemType Directory -Force C:\gta, C:\out | Out-Null
-          $targets = @(
-            '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">',
-            '  <Target Name="SwapSources" BeforeTargets="SelectClCompile;ClCompile">',
-            '    <ItemGroup>',
-            '      <ClCompile Remove="@(ClCompile)" />',
-            '      <ClCompile Include="$(SkyModSrc)"><LanguageStandard>stdcpplatest</LanguageStandard></ClCompile>',
-            '    </ItemGroup>',
-            '  </Target>',
-            '</Project>'
+          $d = "C:\plugin-sdk"
+          $lib = Get-ChildItem $d -Recurse -Filter plugin.lib | Select-Object -First 1
+          if (-not $lib) { Write-Host "plugin.lib not found"; exit 1 }
+          Write-Host "Using lib: $($lib.FullName)"
+          $defs = @(
+            '#define TARGET_NAME "SkyMod"',
+            '#define GTAGAME_NAME "San Andreas"',
+            '#define GTAGAME_ABBR "SA"',
+            '#define GTAGAME_ABBRLOW "sa"',
+            '#define GTAGAME_PROTAGONISTNAME "CJ"',
+            '#define GTAGAME_CITYNAME "San Andreas"'
           )
-          Set-Content -Path C:\swap.targets -Value $targets
-          msbuild $proj.FullName /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /p:TargetName=SkyMod /p:TargetExt=.asi /p:OutDir=C:\out\ "/p:SkyModSrc=$env:GITHUB_WORKSPACE\SkyMod.cpp" /p:CustomAfterMicrosoftCommonTargets=C:\swap.targets
+          Set-Content -Path C:\skymod_defs.h -Value $defs
+          $inc = @("$d\plugin_sa", "$d\plugin_sa\game_sa", "$d\plugin_sa\game_sa\enums", "$d\plugin_sa\game_sa\rw", "$d\shared", "$d\shared\game") | ForEach-Object { "/I$_" }
+          foreach ($crt in "/MT", "/MD") {
+            Write-Host "=== Compiling with $crt"
+            $out = & cl /nologo /LD /EHsc $crt /O2 /std:c++latest /FIC:\skymod_defs.h /DGTASA /DPLUGIN_SGV_10US /DRW /D_CRT_NON_CONFORMING_SWPRINTFS /D_CRT_SECURE_NO_WARNINGS @inc SkyMod.cpp /Fe:SkyMod.asi /link "/LIBPATH:$($lib.DirectoryName)" plugin.lib user32.lib 2>&1 | Out-String
+            Write-Host $out
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($out -notmatch "LNK2038") { break }
+          }
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          $asi = Get-ChildItem C:\out, C:\gta, C:\plugin-sdk -Recurse -Filter SkyMod.asi -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $asi) { Write-Host "SkyMod.asi not found"; exit 1 }
-          Copy-Item $asi.FullName "$env:GITHUB_WORKSPACE\SkyMod.asi"
+          if (-not (Test-Path SkyMod.asi)) { Write-Host "SkyMod.asi not found"; exit 1 }
 
       - uses: actions/upload-artifact@v4
         with:
