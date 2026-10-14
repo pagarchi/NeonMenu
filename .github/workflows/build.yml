@@ -7,12 +7,28 @@ jobs:
   build:
     runs-on: windows-2022
     env:
-      PLUGIN_SDK_DIR: C:\plugin-sdk
+      PLUGIN_SDK_DIR: C:\plugin-sdk\
+      GTA_SA_DIR: C:\gta
+      GTA_VC_DIR: C:\gta
+      GTA_III_DIR: C:\gta
+      GTA_II_DIR: C:\gta
+      GTA_IV_DIR: C:\gta
     steps:
       - uses: actions/checkout@v4
 
       - name: Get plugin-sdk
         run: git clone --depth 1 https://github.com/DK22Pac/plugin-sdk.git C:\plugin-sdk
+
+      - name: Get premake
+        run: |
+          Invoke-WebRequest https://github.com/premake/premake-core/releases/download/v5.0.0-beta7/premake-5.0.0-beta7-windows.zip -OutFile p.zip
+          Expand-Archive p.zip C:\premake
+
+      - name: Generate VS projects
+        working-directory: C:\plugin-sdk
+        run: |
+          C:\premake\premake5.exe vs2022
+          Get-ChildItem C:\plugin-sdk -Recurse -Filter *.vcxproj | ForEach-Object { $_.FullName }
 
       - uses: microsoft/setup-msbuild@v2
       - uses: ilammy/msvc-dev-cmd@v1
@@ -20,17 +36,17 @@ jobs:
           arch: x86
 
       - name: Build plugin-sdk library (GTA SA)
-        run: msbuild C:\plugin-sdk\plugin_sa\plugin_sa.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /p:PLUGIN_SDK_DIR=C:\plugin-sdk\
+        run: msbuild C:\plugin-sdk\plugin_sa\plugin_sa.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143
 
       - name: Compile SkyMod.asi
         shell: cmd
         run: |
           dir /s /b C:\plugin-sdk\output\*.lib
           cl /nologo /LD /EHsc /MT /O2 /std:c++17 /DGTASA /DPLUGIN_SGV_10US /D_CRT_SECURE_NO_WARNINGS /DNOMINMAX ^
-            /I"%PLUGIN_SDK_DIR%\plugin_sa" /I"%PLUGIN_SDK_DIR%\plugin_sa\game_sa" ^
-            /I"%PLUGIN_SDK_DIR%\shared" /I"%PLUGIN_SDK_DIR%\shared\game" ^
+            /I"%PLUGIN_SDK_DIR%plugin_sa" /I"%PLUGIN_SDK_DIR%plugin_sa\game_sa" ^
+            /I"%PLUGIN_SDK_DIR%shared" /I"%PLUGIN_SDK_DIR%shared\game" ^
             SkyMod.cpp /Fe:SkyMod.asi ^
-            /link /LIBPATH:"%PLUGIN_SDK_DIR%\output\lib" plugin.lib user32.lib
+            /link /LIBPATH:"%PLUGIN_SDK_DIR%output\lib" plugin.lib user32.lib
 
       - uses: actions/upload-artifact@v4
         with:
